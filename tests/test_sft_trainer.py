@@ -21,6 +21,7 @@ import transformers
 from datasets import Dataset, DatasetDict, IterableDatasetDict, load_dataset
 from packaging.version import Version
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
@@ -926,6 +927,38 @@ class TestSFTTrainer(TrlTestCase):
 
         assert trainer.router_aux_loss_coef == 0.5
         assert trainer.aux_loss_enabled
+
+    @pytest.mark.parametrize("original_router_logits", [False, True])
+    def test_save_model_preserves_output_router_logits(self, original_router_logits):
+        model_id = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
+        model = AutoModelForCausalLM.from_pretrained(model_id, output_router_logits=original_router_logits)
+        dataset = load_dataset("trl-internal-testing/zen", "standard_language_modeling", split="train[:2]")
+        training_args = SFTConfig(
+            output_dir=self.tmp_dir,
+            use_cpu=True,
+            bf16=False,
+            fp16=False,
+            gradient_checkpointing=False,
+            router_aux_loss_coef=0.0 if original_router_logits else 0.001,
+            report_to="none",
+            save_strategy="no",
+            max_steps=1,
+        )
+        trainer = SFTTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=dataset,
+            processing_class=AutoTokenizer.from_pretrained(model_id),
+        )
+        trainer.train()
+        if not original_router_logits:
+            assert any("aux_loss" in log for log in trainer.state.log_history)
+
+        trainer.save_model()
+
+        assert model.config.get_text_config().output_router_logits is not original_router_logits
+        saved_config = AutoConfig.from_pretrained(self.tmp_dir)
+        assert saved_config.get_text_config().output_router_logits is original_router_logits
 
     def test_aux_loss_does_not_scale_with_gradient_accumulation(self):
         # Four copies of one example: every micro-batch has the same aux loss as the full batch

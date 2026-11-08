@@ -1245,6 +1245,7 @@ class SFTTrainer(_BaseTrainer):
                 f"that returns its router logits, so there is no auxiliary loss to weight."
             )
         self.aux_loss_enabled = hasattr(text_config, "output_router_logits") and self.router_aux_loss_coef != 0.0
+        self._original_output_router_logits = getattr(text_config, "output_router_logits", None)
         if hasattr(text_config, "router_aux_loss_coef"):
             # The native and chunked forwards add the aux loss from the model config, so keep the config in sync with
             # the coef: enable it (and propagate the coef) when non-zero, disable it otherwise. This overrides any
@@ -1746,6 +1747,20 @@ class SFTTrainer(_BaseTrainer):
         logs.update(metrics)
         super().log(logs, start_time)
         self._metrics[mode].clear()
+
+    def save_model(self, output_dir: str | None = None, _internal_call: bool = False) -> None:
+        """Save the model with its original router-logit setting."""
+        if self._original_output_router_logits is None:
+            return super().save_model(output_dir, _internal_call=_internal_call)
+
+        text_config = self.model.config.get_text_config()
+        training_output_router_logits = text_config.output_router_logits
+        # Keep the training-only router setting out of the serialized config.
+        text_config.output_router_logits = self._original_output_router_logits
+        try:
+            super().save_model(output_dir, _internal_call=_internal_call)
+        finally:
+            text_config.output_router_logits = training_output_router_logits
 
     # Ensure the model card is saved along with the checkpoint
     def _save_checkpoint(self, model, trial):
